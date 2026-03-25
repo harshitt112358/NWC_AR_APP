@@ -1,12 +1,15 @@
 # ============================================================
 # AR METRICS APP (Standalone)
-# PART 1
+# Updated with:
+# 1) Comment box for every metric block
+# 2) Second Excel export with components, component values, metric value, and comment
 # ============================================================
 
 import re
 import io
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from collections import defaultdict
 
 import pandas as pd
 import streamlit as st
@@ -29,8 +32,8 @@ class MetricSpec:
     numerators: Optional[List[str]] = None
     multi_denominator: Optional[str] = None
     notes: Optional[str] = None
-    metric_name: Optional[str] = None   # clean display name
-    region: Optional[str] = None        # extracted region
+    metric_name: Optional[str] = None
+    region: Optional[str] = None
 
 
 AR_METRICS: List[MetricSpec] = [
@@ -883,9 +886,8 @@ AR_METRICS: List[MetricSpec] = [
                metric_name="Cash benefit as % of inscope spend", region="—"),
 ]
 
-
 # ============================================================
-# CALCULATION ENGINE  (unchanged)
+# CALCULATION ENGINE
 # ============================================================
 
 def safe_float(x: Any):
@@ -905,20 +907,20 @@ def calc_metric(spec: MetricSpec, inputs: Dict[str, Any]):
     if spec.calc_type == "ratio_pct":
         num = safe_float(inputs.get(spec.numerator))
         den = safe_float(inputs.get(spec.denominator))
-        outputs["Value (%)"] = None if not num or not den or den == 0 else (num / den) * 100
+        outputs["Value (%)"] = None if num is None or den is None or den == 0 else (num / den) * 100
         return outputs
 
     if spec.calc_type == "multi_ratio_pct":
         den = safe_float(inputs.get(spec.multi_denominator))
-        for n in spec.numerators:
+        for n in spec.numerators or []:
             num = safe_float(inputs.get(n))
-            outputs[f"{n} (%)"] = None if not num or not den or den == 0 else (num / den) * 100
+            outputs[f"{n} (%)"] = None if num is None or den is None or den == 0 else (num / den) * 100
         return outputs
 
     if spec.calc_type == "days_ratio":
         num = safe_float(inputs.get(spec.numerator))
         den = safe_float(inputs.get(spec.denominator))
-        outputs["Value (Days)"] = None if not num or not den or den == 0 else (num / den) * 365
+        outputs["Value (Days)"] = None if num is None or den is None or den == 0 else (num / den) * 365
         return outputs
 
     return outputs
@@ -937,6 +939,12 @@ if "demographics" not in st.session_state:
         "Currency": "",
         "FY / Period": "",
     }
+
+if "kpi_inputs" not in st.session_state:
+    st.session_state.kpi_inputs = {}
+
+if "kpi_comments" not in st.session_state:
+    st.session_state.kpi_comments = {}
 
 # ============================================================
 # SIDEBAR
@@ -970,12 +978,12 @@ if menu == "Demographics":
         )
 
     with col2:
+        region_options = ["", "AMER", "APAC", "EMEA", "Global"]
+        current_region = st.session_state.demographics["Primary Region"]
         st.session_state.demographics["Primary Region"] = st.selectbox(
             "Primary Region",
-            options=["", "AMER", "APAC", "EMEA", "Global"],
-            index=["", "AMER", "APAC", "EMEA", "Global"].index(
-                st.session_state.demographics["Primary Region"]
-            ) if st.session_state.demographics["Primary Region"] in ["", "AMER", "APAC", "EMEA", "Global"] else 0
+            options=region_options,
+            index=region_options.index(current_region) if current_region in region_options else 0
         )
         st.session_state.demographics["Currency"] = st.text_input(
             "Currency", st.session_state.demographics["Currency"],
@@ -1002,37 +1010,23 @@ if menu == "Demographics":
 # ============================================================
 # KPI PAGE
 # ============================================================
+
 else:
-
-    if "kpi_inputs" not in st.session_state:
-        st.session_state.kpi_inputs = {}
-
     export_rows = []
-
-    # --------------------------------------------------------
-    # GROUP METRICS BY LEVER
-    # --------------------------------------------------------
-    from collections import defaultdict
+    component_export_rows = []
 
     metrics_by_lever = defaultdict(list)
     for spec in AR_METRICS:
         metrics_by_lever[spec.lever].append(spec)
 
-    # --------------------------------------------------------
-    # RENDER LEVER-WISE
-    # --------------------------------------------------------
     for lever, specs in metrics_by_lever.items():
 
         st.markdown(f"## {lever}")
 
         for spec in specs:
-
-            # ---- Expander label now shows: Metric Name | Region ----
             display_label = f"{spec.metric_name}  |  {spec.region}"
 
             with st.expander(display_label):
-
-                # Show structured info at the top of each expander
                 col1, col2, col3 = st.columns(3)
                 col1.markdown(f"**Lever:** {spec.lever}")
                 col2.markdown(f"**Metric:** {spec.metric_name}")
@@ -1042,17 +1036,15 @@ else:
 
                 kpi_key = f"{spec.lever}|||{spec.kpi}"
 
-                # Initialize storage for this KPI
                 if kpi_key not in st.session_state.kpi_inputs:
-                    st.session_state.kpi_inputs[kpi_key] = {
-                        comp: "" for comp in spec.components
-                    }
+                    st.session_state.kpi_inputs[kpi_key] = {comp: "" for comp in spec.components}
+
+                if kpi_key not in st.session_state.kpi_comments:
+                    st.session_state.kpi_comments[kpi_key] = ""
 
                 inputs = {}
 
-                # ----------------------------
-                # Component Inputs (WITH KEYS)
-                # ----------------------------
+                # Component Inputs
                 for comp in spec.components:
                     st.session_state.kpi_inputs[kpi_key][comp] = st.text_input(
                         comp,
@@ -1061,14 +1053,18 @@ else:
                     )
                     inputs[comp] = st.session_state.kpi_inputs[kpi_key][comp]
 
-                # ----------------------------
-                # Calculate  (logic unchanged)
-                # ----------------------------
+                # Comment box
+                st.session_state.kpi_comments[kpi_key] = st.text_area(
+                    "Comment",
+                    value=st.session_state.kpi_comments.get(kpi_key, ""),
+                    key=f"comment::{kpi_key}",
+                    placeholder="Describe how the component values were extracted..."
+                )
+
+                # Calculate
                 outputs = calc_metric(spec, inputs)
 
-                # ----------------------------
-                # Output Fields (WITH KEYS)
-                # ----------------------------
+                # Output Fields
                 for out_label, v in outputs.items():
                     st.text_input(
                         out_label,
@@ -1077,11 +1073,8 @@ else:
                         key=f"out::{kpi_key}::{out_label}"
                     )
 
-                # ----------------------------
                 # Export Rows
-                # ----------------------------
                 for out_label, v in outputs.items():
-                    # Derive Unit from output label
                     if "(%)" in out_label or out_label == "Value (%)":
                         unit = "%"
                     elif "Days" in out_label:
@@ -1096,35 +1089,84 @@ else:
                         "Industry": st.session_state.demographics.get("Industry", ""),
                         "Industry L2": st.session_state.demographics.get("Industry L2", ""),
                         "Primary Region": st.session_state.demographics.get("Primary Region", ""),
+                        "Currency": st.session_state.demographics.get("Currency", ""),
+                        "FY / Period": st.session_state.demographics.get("FY / Period", ""),
                         "Region": spec.region,
                         "KPI": spec.metric_name,
                         "Value": "" if v is None else v,
                         "Unit": unit,
                     })
 
-    # --------------------------------------------------------
+                    for comp in spec.components:
+                        component_export_rows.append({
+                            "Function": "AR",
+                            "Lever": spec.lever,
+                            "Company": st.session_state.demographics.get("Company", ""),
+                            "Industry": st.session_state.demographics.get("Industry", ""),
+                            "Industry L2": st.session_state.demographics.get("Industry L2", ""),
+                            "Primary Region": st.session_state.demographics.get("Primary Region", ""),
+                            "Currency": st.session_state.demographics.get("Currency", ""),
+                            "FY / Period": st.session_state.demographics.get("FY / Period", ""),
+                            "Region": spec.region,
+                            "KPI": spec.metric_name,
+                            "Output Label": out_label,
+                            "Metric Value": "" if v is None else v,
+                            "Metric Unit": unit,
+                            "Component": comp,
+                            "Component Value": inputs.get(comp, ""),
+                            "Comment": st.session_state.kpi_comments.get(kpi_key, "")
+                        })
+
+    # ============================================================
     # EXPORT SECTION
-    # --------------------------------------------------------
+    # ============================================================
+
     st.markdown("---")
     st.subheader("Export")
 
     export_df = pd.DataFrame(export_rows, columns=[
         "Function", "Lever", "Company", "Industry", "Industry L2",
-        "Primary Region", "Region", "KPI", "Value", "Unit"
+        "Primary Region", "Currency", "FY / Period", "Region", "KPI", "Value", "Unit"
     ])
 
+    component_export_df = pd.DataFrame(component_export_rows, columns=[
+        "Function", "Lever", "Company", "Industry", "Industry L2",
+        "Primary Region", "Currency", "FY / Period", "Region", "KPI", "Output Label",
+        "Metric Value", "Metric Unit", "Component", "Component Value", "Comment"
+    ])
+
+    st.markdown("### KPI export preview")
     st.dataframe(export_df, use_container_width=True, hide_index=True)
 
-    towrite = io.BytesIO()
-    with pd.ExcelWriter(towrite, engine="xlsxwriter") as writer:
+    st.markdown("### Component-level export preview")
+    st.dataframe(component_export_df, use_container_width=True, hide_index=True)
+
+    # Main KPI export
+    towrite_main = io.BytesIO()
+    with pd.ExcelWriter(towrite_main, engine="xlsxwriter") as writer:
         export_df.to_excel(writer, index=False, sheet_name="AR KPIs")
-    towrite.seek(0)
+    towrite_main.seek(0)
 
     st.download_button(
-        "Download Excel",
-        data=towrite.getvalue(),
+        "Download KPI Excel",
+        data=towrite_main.getvalue(),
         file_name="ar_kpis_export.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
         key="download_ar_excel"
+    )
+
+    # Component-level export
+    towrite_components = io.BytesIO()
+    with pd.ExcelWriter(towrite_components, engine="xlsxwriter") as writer:
+        component_export_df.to_excel(writer, index=False, sheet_name="AR KPI Components")
+    towrite_components.seek(0)
+
+    st.download_button(
+        "Download Component Excel",
+        data=towrite_components.getvalue(),
+        file_name="ar_kpi_components_export.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="download_ar_component_excel"
     )
